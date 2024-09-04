@@ -1,0 +1,19 @@
+.{
+    .name = "vulkan-tutorial",
+    .version = "0.0.0",
+    .dependencies = .{
+        .@"mach-glfw" = .{
+            .url = "https://github.com/slimsag/mach-glfw/archive/fb4ae48540454270ab969c8c645bbc6eff3c2dfb.tar.gz",
+            .hash = "12201ae68707aefe54ffb9d8c64721d4a2ac36186f8bd390e4f670033fec6737664a",
+        },
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/18f38ef2b7ae394734bd8b28d43f120f2b9567c1.tar.gz",
+            .hash = "1220530d62adb3f7ab87bacde31c302955a5803db52e302a0c7f8e107ca03f7aeca5",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
