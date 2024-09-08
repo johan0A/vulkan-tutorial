@@ -19,6 +19,10 @@ const BaseDispatch = vk.BaseWrapper(apis);
 const InstanceDispatch = vk.InstanceWrapper(apis);
 const DeviceDispatch = vk.DeviceWrapper(apis);
 
+const QueueFamilyIndices = struct {
+    graphics_family: ?u32,
+};
+
 allocator: Allocator,
 
 //glfw:
@@ -50,7 +54,8 @@ pub fn init(allocator: Allocator) !Self {
         .instance = undefined,
     };
     self.instance = try self.createVkInstance();
-    self.instance_dispatch = try InstanceDispatch.load(self.instance, self.base_dispatch.dispatch.vkGetInstanceProcAddr);
+    self.instance_dispatch =
+        try InstanceDispatch.load(self.instance, self.base_dispatch.dispatch.vkGetInstanceProcAddr);
     try self.initVulkan();
     return self;
 }
@@ -67,6 +72,29 @@ fn pickPhysicalDevice(self: *Self) !vk.PhysicalDevice {
     }
 
     return error.NoPhysicalDeviceFound;
+}
+
+fn isDeviceSuitable(self: Self, device: vk.PhysicalDevice) !bool {
+    return self.findQueueFamilies(device).graphics_family != null;
+}
+
+fn findQueueFamilies(self: Self, device: vk.PhysicalDevice) QueueFamilyIndices {
+    var indices: QueueFamilyIndices = .{
+        .graphics_family = null,
+    };
+
+    const queue_families =
+        try self.instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(device, self.allocator);
+    defer self.allocator.free(queue_families);
+
+    for (queue_families, 0..) |queue_familie, i| {
+        if (queue_familie.queue_flags == .graphics_bit) {
+            indices.graphics_family = i;
+            break;
+        }
+    }
+
+    return indices;
 }
 
 fn createVkInstance(self: *Self) !vk.Instance {
@@ -95,7 +123,8 @@ fn createVkInstance(self: *Self) !vk.Instance {
     };
 
     // TODO: add checking for extensions
-    // const glfwExtensions = try self.base_dispatch.enumerateInstanceLayerPropertiesAlloc(self.allocator);
+    const glfwExtensions = try self.base_dispatch.enumerateInstanceLayerPropertiesAlloc(self.allocator);
+    _ = glfwExtensions; // autofix
 
     return try self.base_dispatch.createInstance(
         &create_info,
