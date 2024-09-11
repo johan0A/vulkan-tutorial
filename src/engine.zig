@@ -15,25 +15,29 @@ const apis: []const vk.ApiInfo = &.{
     vk.extensions.khr_swapchain,
 };
 
-const BaseDispatch = vk.BaseWrapper(apis);
-const InstanceDispatch = vk.InstanceWrapper(apis);
-const DeviceDispatch = vk.DeviceWrapper(apis);
+const Dispatch = struct {
+    pub const Base = vk.BaseWrapper(apis);
+    pub const Instance = vk.InstanceWrapper(apis);
+    pub const Device = vk.DeviceWrapper(apis);
+    base: Base,
+    instance: Instance,
+    device: Device,
+};
 
 const QueueFamilyIndices = struct {
     graphics_family: ?u32,
 };
 
-allocator: Allocator,
+alloc: Allocator,
 
 //glfw:
 window: glfw.Window,
 
 //vk:
-base_dispatch: BaseDispatch,
-instance_dispatch: InstanceDispatch,
-device_dispatch: DeviceDispatch,
+dispatch: Dispatch,
 
 instance: vk.Instance,
+device: vk.Device,
 
 fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
     std.log.err("glfw: {}: {s}\n", .{ error_code, description });
@@ -45,24 +49,26 @@ pub fn init(allocator: Allocator) !Self {
         return error.GLFWInitFailed;
     }
 
-    var self = Self{
-        .allocator = allocator,
-        .base_dispatch = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress))),
-        .instance_dispatch = undefined,
-        .device_dispatch = undefined,
+    const base_dispatch = try Dispatch.Base.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
+    const instance = try createVkInstance(base_dispatch, allocator);
+    const instance_dispatch = try Dispatch.Instance.load(instance, base_dispatch.dispatch.vkGetInstanceProcAddr);
+
+    return .{
+        .alloc = allocator,
+        .dispatch = Dispatch{
+            .base = base_dispatch,
+            .device = undefined,
+            .instance = instance_dispatch,
+        },
         .window = try Self.initWindow(),
-        .instance = undefined,
+        .instance = instance,
+        .device = undefined,
     };
-    self.instance = try self.createVkInstance();
-    self.instance_dispatch =
-        try InstanceDispatch.load(self.instance, self.base_dispatch.dispatch.vkGetInstanceProcAddr);
-    try self.initVulkan();
-    return self;
 }
 
 fn pickPhysicalDevice(self: *Self) !vk.PhysicalDevice {
-    const devices = try self.instance_dispatch.enumeratePhysicalDevicesAlloc(self.allocator);
-    defer self.allocator.free(devices);
+    const devices = try self.instance_dispatch.enumeratePhysicalDevicesAlloc(self.alloc);
+    defer self.alloc.free(devices);
 
     for (devices) |device| {
         const properties = try self.instance_dispatch.getPhysicalDeviceProperties(device);
@@ -74,18 +80,18 @@ fn pickPhysicalDevice(self: *Self) !vk.PhysicalDevice {
     return error.NoPhysicalDeviceFound;
 }
 
-fn isDeviceSuitable(self: Self, device: vk.PhysicalDevice) !bool {
-    return self.findQueueFamilies(device).graphics_family != null;
+fn isPhysicalDeviceSuitable(self: Self, physical_device: vk.PhysicalDevice) !bool {
+    return self.findQueueFamilies(physical_device).graphics_family != null;
 }
 
-fn findQueueFamilies(self: Self, device: vk.PhysicalDevice) QueueFamilyIndices {
+fn findQueueFamilies(self: Self, physical_device: vk.PhysicalDevice) QueueFamilyIndices {
     var indices: QueueFamilyIndices = .{
         .graphics_family = null,
     };
 
     const queue_families =
-        try self.instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(device, self.allocator);
-    defer self.allocator.free(queue_families);
+        try self.instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical_device, self.alloc);
+    defer self.alloc.free(queue_families);
 
     for (queue_families, 0..) |queue_familie, i| {
         if (queue_familie.queue_flags == .graphics_bit) {
@@ -97,7 +103,8 @@ fn findQueueFamilies(self: Self, device: vk.PhysicalDevice) QueueFamilyIndices {
     return indices;
 }
 
-fn createVkInstance(self: *Self) !vk.Instance {
+
+fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance {
     const appinfo = vk.ApplicationInfo{
         .s_type = .application_info,
         .p_application_name = "Vulkan Tutorial",
@@ -110,7 +117,7 @@ fn createVkInstance(self: *Self) !vk.Instance {
     const glfw_extensions = glfw.getRequiredInstanceExtensions() orelse return error.GLFWGetRequiredInstanceExtensionsFailed;
 
     if (validation_layers_enabled) {
-        try self.checkValidationLayerSupport();
+        try checkValidationLayerSupport(alloc, base_dispatch);
     }
 
     const create_info = vk.InstanceCreateInfo{
@@ -122,11 +129,11 @@ fn createVkInstance(self: *Self) !vk.Instance {
         .pp_enabled_layer_names = if (validation_layers_enabled) @ptrCast(&validation_layers) else null,
     };
 
-    // TODO: add checking for extensions
-    const glfwExtensions = try self.base_dispatch.enumerateInstanceLayerPropertiesAlloc(self.allocator);
-    _ = glfwExtensions; // autofix
+    // // TODO: add checking for extensions
+    // const glfwExtensions = try base_dispatch.enumerateInstanceLayerPropertiesAlloc(alloc);
+    // _ = glfwExtensions; // autofix
 
-    return try self.base_dispatch.createInstance(
+    return try base_dispatch.createInstance(
         &create_info,
         null,
     );
@@ -156,14 +163,14 @@ pub fn mainLoop(self: Self) void {
 }
 
 pub fn deinit(self: *Self) void {
-    self.instance_dispatch.destroyInstance(self.instance, null);
+    self.dispatch.instance.destroyInstance(self.instance, null);
     self.window.destroy();
     glfw.terminate();
 }
 
-fn checkValidationLayerSupport(self: Self) !void {
-    const available_layers = try self.base_dispatch.enumerateInstanceLayerPropertiesAlloc(self.allocator);
-    defer self.allocator.free(available_layers);
+fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !void {
+    const available_layers = try base_dispatch.enumerateInstanceLayerPropertiesAlloc(alloc);
+    defer alloc.free(available_layers);
 
     var validation_layers_idx: usize = 0;
     for (available_layers) |available_layer| {
