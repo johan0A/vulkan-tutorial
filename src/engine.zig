@@ -11,8 +11,8 @@ const validation_layers = [_][:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
 const apis: []const vk.ApiInfo = &.{
     vk.features.version_1_0,
-    vk.extensions.khr_surface,
-    vk.extensions.khr_swapchain,
+    // vk.extensions.khr_surface,
+    // vk.extensions.khr_swapchain,
 };
 
 const Dispatch = struct {
@@ -39,70 +39,61 @@ dispatch: Dispatch,
 instance: vk.Instance,
 device: vk.Device,
 
-fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
-    std.log.err("glfw: {}: {s}\n", .{ error_code, description });
-}
-
 pub fn init(allocator: Allocator) !Self {
     glfw.setErrorCallback(glfwErrorCallback);
     if (glfw.init(.{}) != true) {
         return error.GLFWInitFailed;
     }
 
+    const window = glfw.Window.create(
+        640,
+        480,
+        "Vulkan Tutorial",
+        null,
+        null,
+        .{ .resizable = false },
+    ) orelse return error.GLFWCreateWindowFailed;
+
     const base_dispatch = try Dispatch.Base.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
+
     const instance = try createVkInstance(base_dispatch, allocator);
     const instance_dispatch = try Dispatch.Instance.load(instance, base_dispatch.dispatch.vkGetInstanceProcAddr);
+
+    const physical_device = try pickPhysicalDevice(instance, instance_dispatch, allocator);
+    const queue_family_indices = try findQueueFamilies(physical_device, instance_dispatch, allocator);
+
+    const device = try createLogicalDevice(physical_device, queue_family_indices.graphics_family.?, instance_dispatch);
+    const device_dispatch = try Dispatch.Device.load(device, instance_dispatch.dispatch.vkGetDeviceProcAddr);
 
     return .{
         .alloc = allocator,
         .dispatch = Dispatch{
             .base = base_dispatch,
-            .device = undefined,
+            .device = device_dispatch,
             .instance = instance_dispatch,
         },
-        .window = try Self.initWindow(),
+        .window = window,
         .instance = instance,
-        .device = undefined,
+        .device = device,
     };
 }
 
-fn pickPhysicalDevice(self: *Self) !vk.PhysicalDevice {
-    const devices = try self.instance_dispatch.enumeratePhysicalDevicesAlloc(self.alloc);
-    defer self.alloc.free(devices);
+pub fn deinit(self: *Self) void {
+    self.dispatch.device.destroyDevice(self.device, null);
+    self.dispatch.instance.destroyInstance(self.instance, null);
+    self.window.destroy();
+    glfw.terminate();
+}
 
-    for (devices) |device| {
-        const properties = try self.instance_dispatch.getPhysicalDeviceProperties(device);
-        if (properties.device_type == .discrete_gpu) {
-            return device;
-        }
+pub fn initVulkan(self: *Self) !void {
+    _ = self; // autofix
+}
+
+pub fn mainLoop(self: Self) void {
+    while (!self.window.shouldClose()) {
+        glfw.pollEvents();
     }
-
-    return error.NoPhysicalDeviceFound;
 }
-
-fn isPhysicalDeviceSuitable(self: Self, physical_device: vk.PhysicalDevice) !bool {
-    return self.findQueueFamilies(physical_device).graphics_family != null;
-}
-
-fn findQueueFamilies(self: Self, physical_device: vk.PhysicalDevice) QueueFamilyIndices {
-    var indices: QueueFamilyIndices = .{
-        .graphics_family = null,
-    };
-
-    const queue_families =
-        try self.instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical_device, self.alloc);
-    defer self.alloc.free(queue_families);
-
-    for (queue_families, 0..) |queue_familie, i| {
-        if (queue_familie.queue_flags == .graphics_bit) {
-            indices.graphics_family = i;
-            break;
-        }
-    }
-
-    return indices;
-}
-
 
 fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance {
     const appinfo = vk.ApplicationInfo{
@@ -125,8 +116,8 @@ fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance
         .p_application_info = &appinfo,
         .enabled_extension_count = @intCast(glfw_extensions.len),
         .pp_enabled_extension_names = glfw_extensions.ptr,
-        .enabled_layer_count = if (validation_layers_enabled) @intCast(validation_layers.len) else 0,
         .pp_enabled_layer_names = if (validation_layers_enabled) @ptrCast(&validation_layers) else null,
+        .enabled_layer_count = if (validation_layers_enabled) @intCast(validation_layers.len) else 0,
     };
 
     // // TODO: add checking for extensions
@@ -137,35 +128,6 @@ fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance
         &create_info,
         null,
     );
-}
-
-pub fn initWindow() !glfw.Window {
-    return glfw.Window.create(
-        640,
-        480,
-        "Vulkan Tutorial",
-        null,
-        null,
-        .{
-            .resizable = false,
-        },
-    ) orelse return error.GLFWCreateWindowFailed;
-}
-
-pub fn initVulkan(self: *Self) !void {
-    _ = self; // autofix
-}
-
-pub fn mainLoop(self: Self) void {
-    while (!self.window.shouldClose()) {
-        glfw.pollEvents();
-    }
-}
-
-pub fn deinit(self: *Self) void {
-    self.dispatch.instance.destroyInstance(self.instance, null);
-    self.window.destroy();
-    glfw.terminate();
 }
 
 fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !void {
@@ -180,10 +142,81 @@ fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !
             validation_layers[validation_layers_idx],
         )) {
             validation_layers_idx += 1;
+            if (validation_layers_idx >= validation_layers.len) break;
         }
     }
 
     if (validation_layers_idx != validation_layers.len) {
-        return error.ValidationLayersNotSupported;
+        return error.NotAllValidationLayersSupported;
     }
+}
+
+fn createLogicalDevice(physical_device: vk.PhysicalDevice, device_graphic_queue_family_index: u32, instance_dispatch: Dispatch.Instance) !vk.Device {
+    const queue_prioritie: f32 = 1;
+    const queue_create_info = vk.DeviceQueueCreateInfo{
+        .s_type = .device_queue_create_info,
+        .queue_family_index = device_graphic_queue_family_index,
+        .queue_count = 1,
+        .p_queue_priorities = @ptrCast(&queue_prioritie),
+    };
+
+    const device_features = vk.PhysicalDeviceFeatures{};
+
+    const create_info = vk.DeviceCreateInfo{
+        .s_type = .device_create_info,
+        .p_queue_create_infos = @ptrCast(&queue_create_info),
+        .queue_create_info_count = 1,
+        .p_enabled_features = &device_features,
+        .pp_enabled_layer_names = if (validation_layers_enabled) @ptrCast(&validation_layers) else null,
+        .enabled_layer_count = if (validation_layers_enabled) @intCast(validation_layers.len) else 0,
+    };
+
+    return try instance_dispatch.createDevice(physical_device, &create_info, null);
+}
+
+fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instance, alloc: Allocator) !vk.PhysicalDevice {
+    const devices = try instance_dispatch.enumeratePhysicalDevicesAlloc(instance, alloc);
+    defer alloc.free(devices);
+
+    for (devices) |device| {
+        if (try isPhysicalDeviceSuitable(device, instance_dispatch, alloc)) {
+            return device;
+        }
+    }
+
+    return error.NoPhysicalDeviceFound;
+}
+
+fn isPhysicalDeviceSuitable(
+    physical_device: vk.PhysicalDevice,
+    instance_dispatch: Dispatch.Instance,
+    alloc: Allocator,
+) !bool {
+    return (try findQueueFamilies(physical_device, instance_dispatch, alloc)).graphics_family != null;
+}
+
+fn findQueueFamilies(
+    physical_device: vk.PhysicalDevice,
+    instance_dispatch: Dispatch.Instance,
+    alloc: Allocator,
+) !QueueFamilyIndices {
+    var indices: QueueFamilyIndices = .{
+        .graphics_family = null,
+    };
+
+    const queue_families = try instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical_device, alloc);
+    defer alloc.free(queue_families);
+
+    for (queue_families, 0..) |queue_familie, i| {
+        if (queue_familie.queue_flags.graphics_bit) {
+            indices.graphics_family = @intCast(i);
+            break;
+        }
+    }
+
+    return indices;
+}
+
+fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
+    std.log.err("glfw: {}: {s}\n", .{ error_code, description });
 }
