@@ -26,7 +26,7 @@ const Dispatch = struct {
 
 const QueueFamilyIndices = struct {
     graphics_family: ?u32,
-    present_damily: ?u32,
+    present_family: ?u32,
 };
 
 alloc: Allocator,
@@ -41,6 +41,7 @@ instance: vk.Instance,
 device: vk.Device,
 
 graphics_queue: vk.Queue,
+present_queue: vk.Queue,
 
 surface: vk.SurfaceKHR,
 
@@ -70,7 +71,7 @@ pub fn init(allocator: Allocator) !Self {
     const physical_device = try pickPhysicalDevice(instance, instance_dispatch, surface, allocator);
     const queue_family_indices = try findQueueFamilies(physical_device, instance_dispatch, surface, allocator);
 
-    const device = try createLogicalDevice(physical_device, queue_family_indices.graphics_family.?, instance_dispatch);
+    const device = try createLogicalDevice(physical_device, queue_family_indices, instance_dispatch);
     const device_dispatch = try Dispatch.Device.load(device, instance_dispatch.dispatch.vkGetDeviceProcAddr);
 
     return .{
@@ -84,6 +85,7 @@ pub fn init(allocator: Allocator) !Self {
         .instance = instance,
         .device = device,
         .graphics_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.graphics_family.?, 0),
+        .present_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.present_family.?, 0),
         .surface = surface,
     };
 }
@@ -159,21 +161,34 @@ fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !
     }
 }
 
-fn createLogicalDevice(physical_device: vk.PhysicalDevice, device_graphic_queue_family_index: u32, instance_dispatch: Dispatch.Instance) !vk.Device {
-    const queue_prioritie: f32 = 1;
-    const queue_create_info = vk.DeviceQueueCreateInfo{
-        .s_type = .device_queue_create_info,
-        .queue_family_index = device_graphic_queue_family_index,
-        .queue_count = 1,
-        .p_queue_priorities = @ptrCast(&queue_prioritie),
+fn createLogicalDevice(physical_device: vk.PhysicalDevice, queue_family_indices: QueueFamilyIndices, instance_dispatch: Dispatch.Instance) !vk.Device {
+    const indices = [_]u32{
+        queue_family_indices.graphics_family.?,
+        queue_family_indices.present_family.?,
     };
+
+    const queue_prioritie: f32 = 1;
+    var queue_create_infos_buff: [indices.len]vk.DeviceQueueCreateInfo = undefined;
+    var queue_create_infos = std.ArrayListUnmanaged(vk.DeviceQueueCreateInfo).initBuffer(&queue_create_infos_buff);
+    outer: for (indices, 0..) |indice, i| {
+        for (indices[0..i]) |previous_indice| {
+            if (previous_indice == indice) continue :outer;
+        }
+
+        queue_create_infos.appendAssumeCapacity(.{
+            .s_type = .device_queue_create_info,
+            .queue_family_index = indice,
+            .queue_count = 1,
+            .p_queue_priorities = @ptrCast(&queue_prioritie),
+        });
+    }
 
     const device_features = vk.PhysicalDeviceFeatures{};
 
     const create_info = vk.DeviceCreateInfo{
         .s_type = .device_create_info,
-        .p_queue_create_infos = @ptrCast(&queue_create_info),
-        .queue_create_info_count = 1,
+        .p_queue_create_infos = @ptrCast(queue_create_infos.items),
+        .queue_create_info_count = @intCast(queue_create_infos.items.len),
         .p_enabled_features = &device_features,
         .pp_enabled_layer_names = if (validation_layers_enabled) @ptrCast(&validation_layers) else null,
         .enabled_layer_count = if (validation_layers_enabled) @intCast(validation_layers.len) else 0,
@@ -212,7 +227,7 @@ fn findQueueFamilies(
 ) !QueueFamilyIndices {
     var indices: QueueFamilyIndices = .{
         .graphics_family = null,
-        .present_damily = null,
+        .present_family = null,
     };
 
     const queue_families = try instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical_device, alloc);
@@ -229,7 +244,7 @@ fn findQueueFamilies(
 
     for (queue_families, 0..) |_, i| {
         if ((try instance_dispatch.getPhysicalDeviceSurfaceSupportKHR(physical_device, @intCast(i), surface) != 0)) {
-            indices.graphics_family = @intCast(i);
+            indices.present_family = @intCast(i);
             break;
         }
     }
