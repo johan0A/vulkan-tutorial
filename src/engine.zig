@@ -11,7 +11,7 @@ const validation_layers = [_][:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
 const apis: []const vk.ApiInfo = &.{
     vk.features.version_1_0,
-    // vk.extensions.khr_surface,
+    vk.extensions.khr_surface,
     // vk.extensions.khr_swapchain,
 };
 
@@ -26,6 +26,7 @@ const Dispatch = struct {
 
 const QueueFamilyIndices = struct {
     graphics_family: ?u32,
+    present_damily: ?u32,
 };
 
 alloc: Allocator,
@@ -41,6 +42,8 @@ device: vk.Device,
 
 graphics_queue: vk.Queue,
 
+surface: vk.SurfaceKHR,
+
 pub fn init(allocator: Allocator) !Self {
     glfw.setErrorCallback(glfwErrorCallback);
     if (glfw.init(.{}) != true) {
@@ -53,7 +56,7 @@ pub fn init(allocator: Allocator) !Self {
         "Vulkan Tutorial",
         null,
         null,
-        .{ .resizable = false },
+        .{ .resizable = false, .client_api = .no_api },
     ) orelse return error.GLFWCreateWindowFailed;
 
     const base_dispatch = try Dispatch.Base.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
@@ -61,8 +64,11 @@ pub fn init(allocator: Allocator) !Self {
     const instance = try createVkInstance(base_dispatch, allocator);
     const instance_dispatch = try Dispatch.Instance.load(instance, base_dispatch.dispatch.vkGetInstanceProcAddr);
 
-    const physical_device = try pickPhysicalDevice(instance, instance_dispatch, allocator);
-    const queue_family_indices = try findQueueFamilies(physical_device, instance_dispatch, allocator);
+    var surface: vk.SurfaceKHR = undefined;
+    _ = glfw.createWindowSurface(instance, window, null, &surface);
+
+    const physical_device = try pickPhysicalDevice(instance, instance_dispatch, surface, allocator);
+    const queue_family_indices = try findQueueFamilies(physical_device, instance_dispatch, surface, allocator);
 
     const device = try createLogicalDevice(physical_device, queue_family_indices.graphics_family.?, instance_dispatch);
     const device_dispatch = try Dispatch.Device.load(device, instance_dispatch.dispatch.vkGetDeviceProcAddr);
@@ -78,11 +84,13 @@ pub fn init(allocator: Allocator) !Self {
         .instance = instance,
         .device = device,
         .graphics_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.graphics_family.?, 0),
+        .surface = surface,
     };
 }
 
 pub fn deinit(self: *Self) void {
     self.dispatch.device.destroyDevice(self.device, null);
+    self.dispatch.instance.destroySurfaceKHR(self.instance, self.surface, null);
     self.dispatch.instance.destroyInstance(self.instance, null);
     self.window.destroy();
     glfw.terminate();
@@ -137,19 +145,16 @@ fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !
     const available_layers = try base_dispatch.enumerateInstanceLayerPropertiesAlloc(alloc);
     defer alloc.free(available_layers);
 
-    var validation_layers_idx: usize = 0;
-    for (available_layers) |available_layer| {
-        if (std.mem.eql(
-            u8,
-            std.mem.span(@as([*c]const u8, @ptrCast(&available_layer.layer_name))),
-            validation_layers[validation_layers_idx],
-        )) {
-            validation_layers_idx += 1;
-            if (validation_layers_idx >= validation_layers.len) break;
+    outer: for (validation_layers) |validation_layer| {
+        for (available_layers) |available_layer| {
+            if (std.mem.eql(
+                u8,
+                std.mem.span(@as([*c]const u8, @ptrCast(&available_layer.layer_name))),
+                validation_layer,
+            )) {
+                continue :outer;
+            }
         }
-    }
-
-    if (validation_layers_idx != validation_layers.len) {
         return error.NotAllValidationLayersSupported;
     }
 }
@@ -177,12 +182,12 @@ fn createLogicalDevice(physical_device: vk.PhysicalDevice, device_graphic_queue_
     return try instance_dispatch.createDevice(physical_device, &create_info, null);
 }
 
-fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instance, alloc: Allocator) !vk.PhysicalDevice {
+fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instance, surface: vk.SurfaceKHR, alloc: Allocator) !vk.PhysicalDevice {
     const devices = try instance_dispatch.enumeratePhysicalDevicesAlloc(instance, alloc);
     defer alloc.free(devices);
 
     for (devices) |device| {
-        if (try isPhysicalDeviceSuitable(device, instance_dispatch, alloc)) {
+        if (try isPhysicalDeviceSuitable(device, instance_dispatch, surface, alloc)) {
             return device;
         }
     }
@@ -193,25 +198,37 @@ fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instanc
 fn isPhysicalDeviceSuitable(
     physical_device: vk.PhysicalDevice,
     instance_dispatch: Dispatch.Instance,
+    surface: vk.SurfaceKHR,
     alloc: Allocator,
 ) !bool {
-    return (try findQueueFamilies(physical_device, instance_dispatch, alloc)).graphics_family != null;
+    return (try findQueueFamilies(physical_device, instance_dispatch, surface, alloc)).graphics_family != null;
 }
 
 fn findQueueFamilies(
     physical_device: vk.PhysicalDevice,
     instance_dispatch: Dispatch.Instance,
+    surface: vk.SurfaceKHR,
     alloc: Allocator,
 ) !QueueFamilyIndices {
     var indices: QueueFamilyIndices = .{
         .graphics_family = null,
+        .present_damily = null,
     };
 
     const queue_families = try instance_dispatch.getPhysicalDeviceQueueFamilyPropertiesAlloc(physical_device, alloc);
     defer alloc.free(queue_families);
 
+    // TODO: prefer queue that supports both graphics and KHR
+
     for (queue_families, 0..) |queue_familie, i| {
         if (queue_familie.queue_flags.graphics_bit) {
+            indices.graphics_family = @intCast(i);
+            break;
+        }
+    }
+
+    for (queue_families, 0..) |_, i| {
+        if ((try instance_dispatch.getPhysicalDeviceSurfaceSupportKHR(physical_device, @intCast(i), surface) != 0)) {
             indices.graphics_family = @intCast(i);
             break;
         }

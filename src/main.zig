@@ -4,9 +4,11 @@ const vk = @import("vulkan");
 const Engine = @import("engine.zig");
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
     var engine = try Engine.init(allocator);
     defer engine.deinit();
+
     engine.mainLoop();
 }
