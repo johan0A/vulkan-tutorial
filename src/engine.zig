@@ -39,6 +39,8 @@ dispatch: Dispatch,
 instance: vk.Instance,
 device: vk.Device,
 
+graphics_queue: vk.Queue,
+
 pub fn init(allocator: Allocator) !Self {
     glfw.setErrorCallback(glfwErrorCallback);
     if (glfw.init(.{}) != true) {
@@ -75,6 +77,7 @@ pub fn init(allocator: Allocator) !Self {
         .window = window,
         .instance = instance,
         .device = device,
+        .graphics_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.graphics_family.?, 0),
     };
 }
 
