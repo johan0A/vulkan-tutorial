@@ -11,7 +11,7 @@ pub fn main() !void {
     const init_allocators_time = timer.lap();
 
     var engine = try Engine.init(allocator);
-    defer engine.deinit();
+    defer engine.deinit(allocator);
 
     const total_time = timer.lap();
     std.debug.print("init_allocators_time: {} ns\n", .{init_allocators_time});

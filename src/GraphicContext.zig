@@ -110,8 +110,8 @@ pub fn init(allocator: Allocator) !Self {
     };
 }
 
-pub fn deinit(self: *Self) void {
-    self.swapchain.deinit(self.device, self.dispatch.device);
+pub fn deinit(self: *Self, allocator: Allocator) void {
+    self.swapchain.deinit(self.device, self.dispatch.device, allocator);
     self.dispatch.device.destroyDevice(self.device, null);
     self.dispatch.instance.destroySurfaceKHR(self.instance, self.surface, null);
     self.dispatch.instance.destroyInstance(self.instance, null);

@@ -15,6 +15,9 @@ extent: vk.Extent2D,
 
 handle: vk.SwapchainKHR,
 
+swap_images: []vk.Image,
+swap_image_views: []vk.ImageView,
+
 pub fn init(
     physical_device: vk.PhysicalDevice,
     device: vk.Device,
@@ -63,7 +66,7 @@ pub fn init(
     else
         capabilities.min_image_count + 1;
 
-    const create_info = blk: {
+    const swapchain = blk: {
         var create_info = vk.SwapchainCreateInfoKHR{
             .surface = surface,
             .min_image_count = image_count,
@@ -77,7 +80,7 @@ pub fn init(
             .present_mode = present_mode,
             .clipped = @intFromBool(false),
             .old_swapchain = .null_handle,
-            .image_sharing_mode = undefined,
+            .image_sharing_mode = .exclusive,
         };
         if (queue_families.graphics_family.? == queue_families.present_family.?) {
             create_info.image_sharing_mode = .concurrent;
@@ -86,17 +89,47 @@ pub fn init(
         } else {
             create_info.image_sharing_mode = .exclusive;
         }
-        break :blk create_info;
+        break :blk try device_dispatch.createSwapchainKHR(device, &create_info, null);
+    };
+
+    const swap_images = try device_dispatch.getSwapchainImagesAllocKHR(device, swapchain, alloc);
+
+    const swap_image_views = blk: {
+        const swap_image_views = try alloc.alloc(vk.ImageView, swap_images.len);
+        for (swap_images, swap_image_views) |swap_image, *view| {
+            const create_info = vk.ImageViewCreateInfo{
+                .image = swap_image,
+                .view_type = .@"2d",
+                .format = surface_format.format,
+                .components = .{ .a = .identity, .b = .identity, .g = .identity, .r = .identity },
+                .subresource_range = .{
+                    .aspect_mask = .{ .color_bit = true },
+                    .base_mip_level = 0,
+                    .level_count = 1,
+                    .base_array_layer = 0,
+                    .layer_count = 1,
+                },
+            };
+            view.* = try device_dispatch.createImageView(device, &create_info, null);
+        }
+        break :blk swap_image_views;
     };
 
     return Self{
         .extent = extent,
         .present_mode = present_mode,
         .surface_format = surface_format,
-        .handle = try device_dispatch.createSwapchainKHR(device, &create_info, null),
+        .handle = swapchain,
+        .swap_images = swap_images,
+        .swap_image_views = swap_image_views,
     };
 }
 
-pub fn deinit(self: Self, device: vk.Device, device_dispatch: Dispatch.Device) void {
+pub fn deinit(self: Self, device: vk.Device, device_dispatch: Dispatch.Device, alloc: Allocator) void {
+    for (self.swap_image_views) |image_view| {
+        device_dispatch.destroyImageView(device, image_view, null);
+    }
+    alloc.free(self.swap_image_views);
     device_dispatch.destroySwapchainKHR(device, self.handle, null);
+    alloc.free(self.swap_images);
 }
