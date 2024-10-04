@@ -1,21 +1,26 @@
 const std = @import("std");
 const glfw = @import("mach-glfw");
 const vk = @import("vulkan");
+const Swapchain = @import("swapchain.zig");
 
 const Allocator = std.mem.Allocator;
 
 const Self = @This();
 
-const validation_layers_enabled = true;
+const validation_layers_enabled = false;
 const validation_layers = [_][:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
-const apis: []const vk.ApiInfo = &.{
-    vk.features.version_1_0,
-    vk.extensions.khr_surface,
-    // vk.extensions.khr_swapchain,
+pub const required_device_extensions = [_][:0]const u8{
+    vk.extensions.khr_swapchain.name,
 };
 
-const Dispatch = struct {
+pub const apis: []const vk.ApiInfo = &.{
+    vk.features.version_1_0,
+    vk.extensions.khr_surface,
+    vk.extensions.khr_swapchain,
+};
+
+pub const Dispatch = struct {
     pub const Base = vk.BaseWrapper(apis);
     pub const Instance = vk.InstanceWrapper(apis);
     pub const Device = vk.DeviceWrapper(apis);
@@ -24,7 +29,7 @@ const Dispatch = struct {
     device: Device,
 };
 
-const QueueFamilyIndices = struct {
+pub const QueueFamilyIndices = struct {
     graphics_family: ?u32,
     present_family: ?u32,
 };
@@ -45,7 +50,12 @@ present_queue: vk.Queue,
 
 surface: vk.SurfaceKHR,
 
+swapchain: Swapchain,
+
 pub fn init(allocator: Allocator) !Self {
+    // NOTE: (should be checked again) most init time taken by glfw.init, glfw.Window.create and Dispatch.Base.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)))
+    // might want to switch out glfw to something else, maybe RGFW
+
     glfw.setErrorCallback(glfwErrorCallback);
     if (glfw.init(.{}) != true) {
         return error.GLFWInitFailed;
@@ -87,10 +97,21 @@ pub fn init(allocator: Allocator) !Self {
         .graphics_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.graphics_family.?, 0),
         .present_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.present_family.?, 0),
         .surface = surface,
+        .swapchain = try Swapchain.init(
+            physical_device,
+            device,
+            device_dispatch,
+            surface,
+            window,
+            queue_family_indices,
+            instance_dispatch,
+            allocator,
+        ),
     };
 }
 
 pub fn deinit(self: *Self) void {
+    self.swapchain.deinit(self.device, self.dispatch.device);
     self.dispatch.device.destroyDevice(self.device, null);
     self.dispatch.instance.destroySurfaceKHR(self.instance, self.surface, null);
     self.dispatch.instance.destroyInstance(self.instance, null);
@@ -108,9 +129,8 @@ pub fn mainLoop(self: Self) void {
     }
 }
 
-fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance {
+pub fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance {
     const appinfo = vk.ApplicationInfo{
-        .s_type = .application_info,
         .p_application_name = "Vulkan Tutorial",
         .application_version = vk.makeApiVersion(1, 0, 0, 0),
         .p_engine_name = "No Engine",
@@ -125,7 +145,6 @@ fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance
     }
 
     const create_info = vk.InstanceCreateInfo{
-        .s_type = .instance_create_info,
         .p_application_info = &appinfo,
         .enabled_extension_count = @intCast(glfw_extensions.len),
         .pp_enabled_extension_names = glfw_extensions.ptr,
@@ -143,7 +162,7 @@ fn createVkInstance(base_dispatch: Dispatch.Base, alloc: Allocator) !vk.Instance
     );
 }
 
-fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !void {
+pub fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !void {
     const available_layers = try base_dispatch.enumerateInstanceLayerPropertiesAlloc(alloc);
     defer alloc.free(available_layers);
 
@@ -151,7 +170,7 @@ fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !
         for (available_layers) |available_layer| {
             if (std.mem.eql(
                 u8,
-                std.mem.span(@as([*c]const u8, @ptrCast(&available_layer.layer_name))),
+                std.mem.span(@as([*:0]const u8, @ptrCast(&available_layer.layer_name))),
                 validation_layer,
             )) {
                 continue :outer;
@@ -161,7 +180,7 @@ fn checkValidationLayerSupport(alloc: Allocator, base_dispatch: Dispatch.Base) !
     }
 }
 
-fn createLogicalDevice(physical_device: vk.PhysicalDevice, queue_family_indices: QueueFamilyIndices, instance_dispatch: Dispatch.Instance) !vk.Device {
+pub fn createLogicalDevice(physical_device: vk.PhysicalDevice, queue_family_indices: QueueFamilyIndices, instance_dispatch: Dispatch.Instance) !vk.Device {
     const indices = [_]u32{
         queue_family_indices.graphics_family.?,
         queue_family_indices.present_family.?,
@@ -176,7 +195,6 @@ fn createLogicalDevice(physical_device: vk.PhysicalDevice, queue_family_indices:
         }
 
         queue_create_infos.appendAssumeCapacity(.{
-            .s_type = .device_queue_create_info,
             .queue_family_index = indice,
             .queue_count = 1,
             .p_queue_priorities = @ptrCast(&queue_prioritie),
@@ -186,18 +204,20 @@ fn createLogicalDevice(physical_device: vk.PhysicalDevice, queue_family_indices:
     const device_features = vk.PhysicalDeviceFeatures{};
 
     const create_info = vk.DeviceCreateInfo{
-        .s_type = .device_create_info,
         .p_queue_create_infos = @ptrCast(queue_create_infos.items),
         .queue_create_info_count = @intCast(queue_create_infos.items.len),
         .p_enabled_features = &device_features,
+        // TODO: apparently validation layers for device have been deprecated so should remove ?
         .pp_enabled_layer_names = if (validation_layers_enabled) @ptrCast(&validation_layers) else null,
         .enabled_layer_count = if (validation_layers_enabled) @intCast(validation_layers.len) else 0,
+        .pp_enabled_extension_names = @ptrCast(&required_device_extensions),
+        .enabled_extension_count = required_device_extensions.len,
     };
 
     return try instance_dispatch.createDevice(physical_device, &create_info, null);
 }
 
-fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instance, surface: vk.SurfaceKHR, alloc: Allocator) !vk.PhysicalDevice {
+pub fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instance, surface: vk.SurfaceKHR, alloc: Allocator) !vk.PhysicalDevice {
     const devices = try instance_dispatch.enumeratePhysicalDevicesAlloc(instance, alloc);
     defer alloc.free(devices);
 
@@ -210,16 +230,43 @@ fn pickPhysicalDevice(instance: vk.Instance, instance_dispatch: Dispatch.Instanc
     return error.NoPhysicalDeviceFound;
 }
 
-fn isPhysicalDeviceSuitable(
+pub fn isPhysicalDeviceSuitable(
     physical_device: vk.PhysicalDevice,
     instance_dispatch: Dispatch.Instance,
     surface: vk.SurfaceKHR,
     alloc: Allocator,
 ) !bool {
-    return (try findQueueFamilies(physical_device, instance_dispatch, surface, alloc)).graphics_family != null;
+    const formats = try instance_dispatch.getPhysicalDeviceSurfaceFormatsAllocKHR(physical_device, surface, alloc);
+    defer alloc.free(formats);
+    const present_modes = try instance_dispatch.getPhysicalDeviceSurfacePresentModesAllocKHR(physical_device, surface, alloc);
+    defer alloc.free(present_modes);
+    return (try findQueueFamilies(physical_device, instance_dispatch, surface, alloc)).graphics_family != null and
+        try checkDeviceExtensionSupport(physical_device, instance_dispatch, alloc) and
+        formats.len > 0 and
+        present_modes.len > 0;
 }
 
-fn findQueueFamilies(
+pub fn checkDeviceExtensionSupport(physical_device: vk.PhysicalDevice, instance_dispatch: Dispatch.Instance, alloc: Allocator) !bool {
+    const available_extensions = try instance_dispatch.enumerateDeviceExtensionPropertiesAlloc(physical_device, null, alloc);
+    defer alloc.free(available_extensions);
+
+    outer: for (required_device_extensions) |required_device_extension| {
+        for (available_extensions) |available_extension| {
+            if (std.mem.eql(
+                u8,
+                std.mem.span(@as([*:0]const u8, @ptrCast(&available_extension.extension_name))),
+                required_device_extension,
+            )) {
+                continue :outer;
+            }
+        }
+        return false;
+    }
+
+    return true;
+}
+
+pub fn findQueueFamilies(
     physical_device: vk.PhysicalDevice,
     instance_dispatch: Dispatch.Instance,
     surface: vk.SurfaceKHR,
