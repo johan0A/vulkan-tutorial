@@ -52,7 +52,10 @@ surface: vk.SurfaceKHR,
 
 swapchain: Swapchain,
 
+render_pass: vk.RenderPass,
 pipeline_layout: vk.PipelineLayout,
+
+graphics_pipeline: vk.Pipeline,
 
 fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
     std.log.err("glfw: {}: {s}\n", .{ error_code, description });
@@ -101,7 +104,9 @@ pub fn init(allocator: Allocator) !Self {
         allocator,
     );
 
-    const pipeline_layout = try createGraphicPipeline(device, device_dispatch, swapchain.extent);
+    const render_pass = try createRenderPass(swapchain.surface_format, device, device_dispatch);
+
+    const pipeline_layout, const graphic_pipeline = try createGraphicPipeline(device, device_dispatch, render_pass);
 
     return Self{
         .alloc = allocator,
@@ -118,10 +123,15 @@ pub fn init(allocator: Allocator) !Self {
         .surface = surface,
         .swapchain = swapchain,
         .pipeline_layout = pipeline_layout,
+        .render_pass = render_pass,
+        .graphics_pipeline = graphic_pipeline,
     };
 }
 
 pub fn deinit(self: *Self, allocator: Allocator) void {
+    self.dispatch.device.destroyPipeline(self.device, self.graphics_pipeline, null);
+    self.dispatch.device.destroyPipelineLayout(self.device, self.pipeline_layout, null);
+    self.dispatch.device.destroyRenderPass(self.device, self.render_pass, null);
     self.swapchain.deinit(self.device, self.dispatch.device, allocator);
     self.dispatch.device.destroyDevice(self.device, null);
     self.dispatch.instance.destroySurfaceKHR(self.instance, self.surface, null);
@@ -310,7 +320,7 @@ pub fn findQueueFamilies(
     return indices;
 }
 
-pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device, swapchain_extent: vk.Extent2D) !vk.PipelineLayout {
+pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device, render_pass: vk.RenderPass) !struct { vk.PipelineLayout, vk.Pipeline } {
     const vert_shader_code align(@alignOf(u32)) = @embedFile("vertex_shader").*;
     const frag_shader_code align(@alignOf(u32)) = @embedFile("fragment_shader").*;
 
@@ -335,7 +345,6 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         vert_shader_stage_info,
         frag_shader_stage_info,
     };
-    _ = shader_stages; // autofix
 
     const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
         .vertex_binding_description_count = 0,
@@ -343,29 +352,28 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         .vertex_attribute_description_count = 0,
         .p_vertex_attribute_descriptions = null,
     };
-    _ = vertex_input_info; // autofix
 
     const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
         .topology = .triangle_list,
         .primitive_restart_enable = vk.FALSE,
     };
-    _ = input_assembly; // autofix
 
-    const viewport = vk.Viewport{
-        .x = 0,
-        .y = 0,
-        .width = @floatFromInt(swapchain_extent.width),
-        .height = @floatFromInt(swapchain_extent.height),
-        .min_depth = 0,
-        .max_depth = 1,
-    };
-    _ = viewport; // autofix
+    // TODO: move this to command buffer
+    // const viewport = vk.Viewport{
+    //     .x = 0,
+    //     .y = 0,
+    //     .width = @floatFromInt(swapchain_extent.width),
+    //     .height = @floatFromInt(swapchain_extent.height),
+    //     .min_depth = 0,
+    //     .max_depth = 1,
+    // };
+    // _ = viewport; // autofix
 
-    const scissors = vk.Rect2D{
-        .offset = .{ .x = 0, .y = 0 },
-        .extent = swapchain_extent,
-    };
-    _ = scissors; // autofix
+    // const scissors = vk.Rect2D{
+    //     .offset = .{ .x = 0, .y = 0 },
+    //     .extent = swapchain_extent,
+    // };
+    // _ = scissors; // autofix
 
     const dynamic_states = [_]vk.DynamicState{
         .viewport,
@@ -375,13 +383,11 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         .p_dynamic_states = &dynamic_states,
         .dynamic_state_count = dynamic_states.len,
     };
-    _ = dynamic_state_info; // autofix
 
     const viewport_state = vk.PipelineViewportStateCreateInfo{
         .viewport_count = 1,
         .scissor_count = 1,
     };
-    _ = viewport_state; // autofix
 
     const rasterizer = vk.PipelineRasterizationStateCreateInfo{
         .depth_clamp_enable = vk.FALSE,
@@ -395,7 +401,6 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         .depth_bias_clamp = 0,
         .depth_bias_slope_factor = 0,
     };
-    _ = rasterizer; // autofix
 
     const multi_sampling = vk.PipelineMultisampleStateCreateInfo{
         .sample_shading_enable = vk.FALSE,
@@ -405,7 +410,6 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         .alpha_to_coverage_enable = vk.FALSE,
         .alpha_to_one_enable = vk.FALSE,
     };
-    _ = multi_sampling; // autofix
 
     const color_blend_attachement = vk.PipelineColorBlendAttachmentState{
         .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true },
@@ -425,7 +429,6 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
         .attachment_count = 1,
         .blend_constants = .{ 0, 0, 0, 0 },
     };
-    _ = color_blending; // autofix
 
     const pipepline_layout_info = vk.PipelineLayoutCreateInfo{
         .set_layout_count = 0,
@@ -435,13 +438,76 @@ pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device
     };
     const pipepline_layout = try device_dispatch.createPipelineLayout(device, &pipepline_layout_info, null);
 
-    return pipepline_layout;
+    const pipeline_create_info = vk.GraphicsPipelineCreateInfo{
+        .stage_count = 2,
+        .p_stages = &shader_stages,
+        .p_vertex_input_state = &vertex_input_info,
+        .p_input_assembly_state = &input_assembly,
+        .p_viewport_state = &viewport_state,
+        .p_rasterization_state = &rasterizer,
+        .p_multisample_state = &multi_sampling,
+        .p_depth_stencil_state = null,
+        .p_color_blend_state = &color_blending,
+        .p_dynamic_state = &dynamic_state_info,
+        .layout = pipepline_layout,
+        .render_pass = render_pass,
+        .subpass = 0,
+        .base_pipeline_handle = .null_handle,
+        .base_pipeline_index = -1,
+    };
+
+    var graphic_pipeline: vk.Pipeline = undefined;
+    _ = try device_dispatch.createGraphicsPipelines(
+        device,
+        .null_handle,
+        1,
+        @ptrCast(&pipeline_create_info),
+        null,
+        @ptrCast(&graphic_pipeline),
+    );
+
+    return .{
+        pipepline_layout,
+        graphic_pipeline,
+    };
 }
 
-pub fn createShaderModule(device: vk.Device, device_dispatch: Dispatch.Device, code: *align(@alignOf(u32)) const []u8) !vk.ShaderModule {
+pub fn createShaderModule(device: vk.Device, device_dispatch: Dispatch.Device, code: []align(@alignOf(u32)) const u8) !vk.ShaderModule {
     const create_info = vk.ShaderModuleCreateInfo{
         .code_size = code.len,
         .p_code = @ptrCast(code),
     };
     return try device_dispatch.createShaderModule(device, &create_info, null);
+}
+
+pub fn createRenderPass(swapchain_surface_format: vk.SurfaceFormatKHR, device: vk.Device, device_dispatch: Dispatch.Device) !vk.RenderPass {
+    const color_attachement = vk.AttachmentDescription{
+        .format = swapchain_surface_format.format,
+        .samples = .{ .@"1_bit" = true },
+        .load_op = .clear,
+        .store_op = .store,
+        .stencil_load_op = .dont_care,
+        .stencil_store_op = .dont_care,
+        .initial_layout = .undefined,
+        .final_layout = .present_src_khr,
+    };
+
+    const color_attachement_ref = vk.AttachmentReference{
+        .attachment = 0,
+        .layout = .color_attachment_optimal,
+    };
+
+    const subpass = vk.SubpassDescription{
+        .pipeline_bind_point = .graphics,
+        .color_attachment_count = 1,
+        .p_color_attachments = @ptrCast(&color_attachement_ref),
+    };
+
+    const render_pass_create_info = vk.RenderPassCreateInfo{
+        .attachment_count = 1,
+        .p_attachments = @ptrCast(&color_attachement),
+        .subpass_count = 1,
+        .p_subpasses = @ptrCast(&subpass),
+    };
+    return try device_dispatch.createRenderPass(device, &render_pass_create_info, null);
 }
