@@ -2,55 +2,60 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "vulkan-tutorial",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    {
+        const exe = b.addExecutable(.{
+            .name = "vulkan-tutorial",
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
 
-    deps(exe, b, target, optimize);
+        deps(exe, b, target, optimize);
 
-    b.installArtifact(exe);
+        b.installArtifact(exe);
 
-    const run_cmd = b.addRunArtifact(exe);
+        const run_cmd = b.addRunArtifact(exe);
 
-    run_cmd.step.dependOn(b.getInstallStep());
+        run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("run", "Run the app");
+        run_step.dependOn(&run_cmd.step);
     }
 
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
+    {
+        const exe_unit_tests = b.addTest(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
 
-    const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+        deps(exe_unit_tests, b, target, optimize);
 
-    deps(exe_unit_tests, b, target, optimize);
+        const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+        const test_step = b.step("test", "Run unit tests");
+        test_step.dependOn(&run_exe_unit_tests.step);
+    }
 
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_exe_unit_tests.step);
+    {
+        const exe_check = b.addExecutable(.{
+            .name = "vulkan-tutorial-check",
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
 
-    const exe_check = b.addExecutable(.{
-        .name = "vulkan-tutorial-check",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+        deps(exe_check, b, target, optimize);
 
-    deps(exe_check, b, target, optimize);
-
-    const check = b.step("check", "Check if exe compiles");
-    check.dependOn(&exe_check.step);
+        const check = b.step("check", "Check if exe compiles");
+        check.dependOn(&exe_check.step);
+    }
 }
 
 fn deps(
@@ -70,4 +75,26 @@ fn deps(
     });
     const vkzig_bindings = vkzig_dep.module("vulkan-zig");
     exe.root_module.addImport("vulkan", vkzig_bindings);
+
+    const vert_cmd = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.2",
+        "-o",
+    });
+    const vert_spv = vert_cmd.addOutputFileArg("vert.spv");
+    vert_cmd.addFileArg(b.path("shaders/shader.vert"));
+    exe.root_module.addAnonymousImport("vertex_shader", .{
+        .root_source_file = vert_spv,
+    });
+
+    const frag_cmd = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.2",
+        "-o",
+    });
+    const frag_spv = frag_cmd.addOutputFileArg("frag.spv");
+    frag_cmd.addFileArg(b.path("shaders/shader.frag"));
+    exe.root_module.addAnonymousImport("fragment_shader", .{
+        .root_source_file = frag_spv,
+    });
 }

@@ -52,6 +52,12 @@ surface: vk.SurfaceKHR,
 
 swapchain: Swapchain,
 
+pipeline_layout: vk.PipelineLayout,
+
+fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
+    std.log.err("glfw: {}: {s}\n", .{ error_code, description });
+}
+
 pub fn init(allocator: Allocator) !Self {
     // NOTE: (should be checked again) most init time taken by glfw.init, glfw.Window.create and Dispatch.Base.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)))
     // might want to switch out glfw to something else, maybe RGFW
@@ -84,7 +90,20 @@ pub fn init(allocator: Allocator) !Self {
     const device = try createLogicalDevice(physical_device, queue_family_indices, instance_dispatch);
     const device_dispatch = try Dispatch.Device.load(device, instance_dispatch.dispatch.vkGetDeviceProcAddr);
 
-    return .{
+    const swapchain = try Swapchain.init(
+        physical_device,
+        device,
+        device_dispatch,
+        surface,
+        window,
+        queue_family_indices,
+        instance_dispatch,
+        allocator,
+    );
+
+    const pipeline_layout = try createGraphicPipeline(device, device_dispatch, swapchain.extent);
+
+    return Self{
         .alloc = allocator,
         .dispatch = Dispatch{
             .base = base_dispatch,
@@ -97,16 +116,8 @@ pub fn init(allocator: Allocator) !Self {
         .graphics_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.graphics_family.?, 0),
         .present_queue = device_dispatch.getDeviceQueue(device, queue_family_indices.present_family.?, 0),
         .surface = surface,
-        .swapchain = try Swapchain.init(
-            physical_device,
-            device,
-            device_dispatch,
-            surface,
-            window,
-            queue_family_indices,
-            instance_dispatch,
-            allocator,
-        ),
+        .swapchain = swapchain,
+        .pipeline_layout = pipeline_layout,
     };
 }
 
@@ -299,6 +310,138 @@ pub fn findQueueFamilies(
     return indices;
 }
 
-fn glfwErrorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
-    std.log.err("glfw: {}: {s}\n", .{ error_code, description });
+pub fn createGraphicPipeline(device: vk.Device, device_dispatch: Dispatch.Device, swapchain_extent: vk.Extent2D) !vk.PipelineLayout {
+    const vert_shader_code align(@alignOf(u32)) = @embedFile("vertex_shader").*;
+    const frag_shader_code align(@alignOf(u32)) = @embedFile("fragment_shader").*;
+
+    const vert_shader_module = try createShaderModule(device, device_dispatch, @ptrCast(&vert_shader_code));
+    defer device_dispatch.destroyShaderModule(device, vert_shader_module, null);
+    const frag_shader_module = try createShaderModule(device, device_dispatch, @ptrCast(&frag_shader_code));
+    defer device_dispatch.destroyShaderModule(device, frag_shader_module, null);
+
+    const vert_shader_stage_info = vk.PipelineShaderStageCreateInfo{
+        .stage = .{ .vertex_bit = true },
+        .module = vert_shader_module,
+        .p_name = "main",
+    };
+
+    const frag_shader_stage_info = vk.PipelineShaderStageCreateInfo{
+        .stage = .{ .fragment_bit = true },
+        .module = frag_shader_module,
+        .p_name = "main",
+    };
+
+    const shader_stages = [2]vk.PipelineShaderStageCreateInfo{
+        vert_shader_stage_info,
+        frag_shader_stage_info,
+    };
+    _ = shader_stages; // autofix
+
+    const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
+        .vertex_binding_description_count = 0,
+        .p_vertex_binding_descriptions = null,
+        .vertex_attribute_description_count = 0,
+        .p_vertex_attribute_descriptions = null,
+    };
+    _ = vertex_input_info; // autofix
+
+    const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
+        .topology = .triangle_list,
+        .primitive_restart_enable = vk.FALSE,
+    };
+    _ = input_assembly; // autofix
+
+    const viewport = vk.Viewport{
+        .x = 0,
+        .y = 0,
+        .width = @floatFromInt(swapchain_extent.width),
+        .height = @floatFromInt(swapchain_extent.height),
+        .min_depth = 0,
+        .max_depth = 1,
+    };
+    _ = viewport; // autofix
+
+    const scissors = vk.Rect2D{
+        .offset = .{ .x = 0, .y = 0 },
+        .extent = swapchain_extent,
+    };
+    _ = scissors; // autofix
+
+    const dynamic_states = [_]vk.DynamicState{
+        .viewport,
+        .scissor,
+    };
+    const dynamic_state_info = vk.PipelineDynamicStateCreateInfo{
+        .p_dynamic_states = &dynamic_states,
+        .dynamic_state_count = dynamic_states.len,
+    };
+    _ = dynamic_state_info; // autofix
+
+    const viewport_state = vk.PipelineViewportStateCreateInfo{
+        .viewport_count = 1,
+        .scissor_count = 1,
+    };
+    _ = viewport_state; // autofix
+
+    const rasterizer = vk.PipelineRasterizationStateCreateInfo{
+        .depth_clamp_enable = vk.FALSE,
+        .rasterizer_discard_enable = vk.FALSE,
+        .polygon_mode = .fill,
+        .line_width = 1,
+        .cull_mode = .{ .back_bit = true },
+        .front_face = .clockwise,
+        .depth_bias_enable = vk.FALSE,
+        .depth_bias_constant_factor = 0,
+        .depth_bias_clamp = 0,
+        .depth_bias_slope_factor = 0,
+    };
+    _ = rasterizer; // autofix
+
+    const multi_sampling = vk.PipelineMultisampleStateCreateInfo{
+        .sample_shading_enable = vk.FALSE,
+        .min_sample_shading = 1,
+        .rasterization_samples = .{ .@"1_bit" = true },
+        .p_sample_mask = null,
+        .alpha_to_coverage_enable = vk.FALSE,
+        .alpha_to_one_enable = vk.FALSE,
+    };
+    _ = multi_sampling; // autofix
+
+    const color_blend_attachement = vk.PipelineColorBlendAttachmentState{
+        .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true },
+        .blend_enable = vk.FALSE,
+        .src_color_blend_factor = .one,
+        .dst_color_blend_factor = .zero,
+        .color_blend_op = .add,
+        .src_alpha_blend_factor = .one,
+        .dst_alpha_blend_factor = .zero,
+        .alpha_blend_op = .add,
+    };
+
+    const color_blending = vk.PipelineColorBlendStateCreateInfo{
+        .logic_op_enable = vk.FALSE,
+        .logic_op = .copy,
+        .p_attachments = @ptrCast(&color_blend_attachement),
+        .attachment_count = 1,
+        .blend_constants = .{ 0, 0, 0, 0 },
+    };
+    _ = color_blending; // autofix
+
+    const pipepline_layout_info = vk.PipelineLayoutCreateInfo{
+        .set_layout_count = 0,
+        .p_set_layouts = null,
+        .push_constant_range_count = 0,
+        .p_push_constant_ranges = null,
+    };
+    const pipepline_layout = try device_dispatch.createPipelineLayout(device, &pipepline_layout_info, null);
+
+    return pipepline_layout;
+}
+
+pub fn createShaderModule(device: vk.Device, device_dispatch: Dispatch.Device, code: *align(@alignOf(u32)) const []u8) !vk.ShaderModule {
+    const create_info = vk.ShaderModuleCreateInfo{
+        .code_size = code.len,
+        .p_code = @ptrCast(code),
+    };
+    return try device_dispatch.createShaderModule(device, &create_info, null);
 }
